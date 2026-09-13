@@ -1,11 +1,11 @@
 # Fedora Power Profile Manager
 
-Controla límites de potencia para CPU Ryzen y GPU NVIDIA en KDE Plasma. Incluye perfiles Eco, Balanced y Max, lectura instantánea en el panel y registro energético por minuto.
+Controls power limits for Ryzen CPUs and NVIDIA GPUs on KDE Plasma. It includes preset and custom profiles, live panel readings, and minute-level energy logging.
 
-Instala dependencias para Fedora y ejecuta:
+Install the Fedora dependencies, then run:
 
 ```bash
 ./install.sh
 ```
 
-Guarda historiales mensuales localmente en archivos CSV.
+Monthly history is stored locally in CSV files for later analysis.

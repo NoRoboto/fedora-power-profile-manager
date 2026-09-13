@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply Eco Dev workstation power profile
+Description=Apply the Eco Dev workstation power profile
 After=systemd-modules-load.service multi-user.target nvidia-persistenced.service
 
 [Service]

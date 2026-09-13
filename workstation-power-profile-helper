@@ -9,7 +9,7 @@ fail() {
     exit 1
 }
 
-[[ ${EUID} -eq 0 ]] || fail "este helper debe ejecutarse como root mediante sudo o systemd."
+[[ ${EUID} -eq 0 ]] || fail "this helper must run as root through sudo or systemd."
 
 NVIDIA_SMI="$(command -v nvidia-smi || true)"
 if [[ -x /usr/local/bin/ryzenadj ]]; then
@@ -17,9 +17,9 @@ if [[ -x /usr/local/bin/ryzenadj ]]; then
 else
     RYZENADJ="$(command -v ryzenadj || true)"
 fi
-[[ -n ${NVIDIA_SMI} ]] || fail "nvidia-smi no esta instalado."
-[[ -n ${RYZENADJ} ]] || fail "ryzenadj no esta instalado o no esta en PATH."
-"${NVIDIA_SMI}" -L >/dev/null 2>&1 || fail "el modulo/controlador NVIDIA no esta cargado o no responde."
+[[ -n ${NVIDIA_SMI} ]] || fail "nvidia-smi is not installed."
+[[ -n ${RYZENADJ} ]] || fail "ryzenadj is not installed or is not in PATH."
+"${NVIDIA_SMI}" -L >/dev/null 2>&1 || fail "the NVIDIA driver is not loaded or is not responding."
 
 capture_stock() {
     local info stapm fast slow
@@ -31,7 +31,7 @@ capture_stock() {
             fast=75000
             slow=75000
         else
-            fail "ryzenadj no pudo leer la CPU: ${info}"
+            fail "ryzenadj could not read the CPU: ${info}"
         fi
     fi
 
@@ -55,13 +55,13 @@ capture_stock() {
         slow="$(read_limit 'slow-limit')"
     fi
     [[ ${stapm} =~ ^[0-9]+$ && ${fast} =~ ^[0-9]+$ && ${slow} =~ ^[0-9]+$ ]] \
-        || fail "no se pudieron detectar los limites stock desde 'ryzenadj -i'."
+        || fail "stock limits could not be detected from 'ryzenadj -i'."
 
     install -d -m 0700 "${STATE_DIR}"
     umask 077
     printf 'STOCK_STAPM=%s\nSTOCK_FAST=%s\nSTOCK_SLOW=%s\n' \
         "${stapm}" "${fast}" "${slow}" >"${STOCK_FILE}"
-    printf 'Limites CPU stock guardados: STAPM=%s mW, fast=%s mW, slow=%s mW.\n' \
+    printf 'Saved stock CPU limits: STAPM=%s mW, fast=%s mW, slow=%s mW.\n' \
         "${stapm}" "${fast}" "${slow}"
 }
 
@@ -76,7 +76,7 @@ apply_limits() {
     gpu_min="${gpu_min//[[:space:]]/}"
     gpu_max="${gpu_max//[[:space:]]/}"
     [[ ${gpu_min} =~ ^[0-9]+([.][0-9]+)?$ && ${gpu_max} =~ ^[0-9]+([.][0-9]+)?$ ]] \
-        || fail "la GPU no publica un rango de Power Limit modificable."
+        || fail "the GPU does not publish an adjustable power-limit range."
     effective_gpu="$(awk -v requested="${gpu_watts}" -v minimum="${gpu_min}" -v maximum="${gpu_max}" \
         'BEGIN {
             if (requested < minimum) requested=minimum
@@ -88,46 +88,66 @@ apply_limits() {
         --stapm-limit="${cpu_milliwatts}" \
         --fast-limit="${cpu_milliwatts}" \
         --slow-limit="${cpu_milliwatts}" 2>&1)" \
-        || fail "ryzenadj fallo; GPU aun no fue modificada: ${output}"
+        || fail "ryzenadj failed; the GPU was not changed: ${output}"
 
     output="$(${NVIDIA_SMI} -i 0 -pl "${effective_gpu}" 2>&1)" \
-        || fail "CPU aplicada, pero nvidia-smi rechazo ${effective_gpu} W: ${output}"
+        || fail "CPU limits were applied, but nvidia-smi rejected ${effective_gpu} W: ${output}"
     EFFECTIVE_GPU="${effective_gpu}"
 }
 
 case "${1:-}" in
     capture-defaults)
         [[ ! -e ${STOCK_FILE} || ${2:-} == "--force" ]] \
-            || fail "ya existe ${STOCK_FILE}; usa --force solo despues de restaurar firmware/reiniciar."
+            || fail "${STOCK_FILE} already exists; use --force only after restoring firmware defaults and rebooting."
         capture_stock
+        ;;
+    quiet)
+        apply_limits 90 30000
+        printf 'Quiet Coding applied: GPU %s W, CPU 30 W.\n' "${EFFECTIVE_GPU}"
         ;;
     eco)
         apply_limits 90 35000
-        printf 'Eco Dev Mode aplicado: GPU %s W (minimo VBIOS si supera 90 W), CPU 35 W.\n' "${EFFECTIVE_GPU}"
+        printf 'Eco Dev applied: GPU %s W, CPU 35 W.\n' "${EFFECTIVE_GPU}"
         ;;
     balanced)
         apply_limits 120 45000
-        printf 'Balanced AI aplicado: GPU %s W (minimo VBIOS si supera 120 W), CPU 45 W.\n' "${EFFECTIVE_GPU}"
+        printf 'Balanced applied: GPU %s W, CPU 45 W.\n' "${EFFECTIVE_GPU}"
+        ;;
+    cpu-focus)
+        apply_limits 90 50000
+        printf 'CPU Focus applied: GPU %s W, CPU 50 W.\n' "${EFFECTIVE_GPU}"
+        ;;
+    ai)
+        apply_limits 180 45000
+        printf 'Local AI applied: GPU %s W, CPU 45 W.\n' "${EFFECTIVE_GPU}"
+        ;;
+    custom)
+        [[ $# -eq 3 ]] || fail "usage: custom GPU_WATTS CPU_WATTS"
+        [[ $2 =~ ^[0-9]+$ && $3 =~ ^[0-9]+$ ]] || fail "custom limits must be whole watts."
+        (( $2 >= 1 && $2 <= 1000 )) || fail "GPU limit must be between 1 and 1000 W."
+        (( $3 >= 10 && $3 <= 75 )) || fail "CPU limit must be between 10 and 75 W."
+        apply_limits "$2" "$(( $3 * 1000 ))"
+        printf 'Custom profile applied: GPU %s W, CPU %s W.\n' "${EFFECTIVE_GPU}" "$3"
         ;;
     max)
-        [[ -r ${STOCK_FILE} ]] || fail "faltan limites CPU stock; ejecuta capture-defaults tras reiniciar."
+        [[ -r ${STOCK_FILE} ]] || fail "stock CPU limits are missing; run capture-defaults after rebooting."
         # File is root-owned, mode 0600, and contains only assignments generated above.
         source "${STOCK_FILE}"
         [[ ${STOCK_STAPM:-} =~ ^[0-9]+$ && ${STOCK_FAST:-} =~ ^[0-9]+$ && ${STOCK_SLOW:-} =~ ^[0-9]+$ ]] \
-            || fail "${STOCK_FILE} contiene valores invalidos."
+            || fail "${STOCK_FILE} contains invalid values."
         gpu_max="$(${NVIDIA_SMI} -i 0 --query-gpu=power.max_limit --format=csv,noheader,nounits 2>/dev/null | head -n1)"
         gpu_max="${gpu_max//[[:space:]]/}"
-        [[ ${gpu_max} =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "no se pudo consultar power.max_limit de la GPU."
+        [[ ${gpu_max} =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "could not query the GPU maximum power limit."
         output="$(${RYZENADJ} --max-performance \
             --stapm-limit="${STOCK_STAPM}" \
             --fast-limit="${STOCK_FAST}" \
             --slow-limit="${STOCK_SLOW}" 2>&1)" \
-            || fail "ryzenadj no pudo restaurar limites stock: ${output}"
+            || fail "ryzenadj could not restore stock CPU limits: ${output}"
         output="$(${NVIDIA_SMI} -i 0 -pl "${gpu_max}" 2>&1)" \
-            || fail "CPU restaurada, pero nvidia-smi rechazo el maximo ${gpu_max} W: ${output}"
-        printf 'Max Performance aplicado: GPU %s W; CPU restaurada a valores capturados.\n' "${gpu_max}"
+            || fail "CPU limits were restored, but nvidia-smi rejected ${gpu_max} W: ${output}"
+        printf 'Max Performance applied: GPU %s W; CPU restored to saved stock limits.\n' "${gpu_max}"
         ;;
     *)
-        fail "perfil invalido. Usa: eco, balanced, max o capture-defaults."
+        fail "invalid profile. Use quiet, eco, balanced, cpu-focus, ai, custom, max, or capture-defaults."
         ;;
 esac

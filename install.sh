@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 id "${TARGET_USER}" >/dev/null 2>&1 || {
-    printf 'Usuario invalido: %s\n' "${TARGET_USER}" >&2
+    printf 'Invalid user: %s\n' "${TARGET_USER}" >&2
     exit 1
 }
 [[ ${TARGET_USER} =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || {
@@ -25,14 +25,14 @@ id "${TARGET_USER}" >/dev/null 2>&1 || {
     exit 1
 }
 
-command -v python3 >/dev/null || { printf 'Falta python3.\n' >&2; exit 1; }
+command -v python3 >/dev/null || { printf 'python3 is missing.\n' >&2; exit 1; }
 python3 -c 'import PyQt6' >/dev/null 2>&1 || {
-    printf 'Falta PyQt6. Instala: sudo dnf install python3-pyqt6\n' >&2
+    printf 'PyQt6 is missing. Install it with: sudo dnf install python3-pyqt6\n' >&2
     exit 1
 }
-command -v nvidia-smi >/dev/null || { printf 'Falta nvidia-smi/controlador NVIDIA.\n' >&2; exit 1; }
+command -v nvidia-smi >/dev/null || { printf 'nvidia-smi or the NVIDIA driver is missing.\n' >&2; exit 1; }
 [[ -x /usr/local/bin/ryzenadj ]] || command -v ryzenadj >/dev/null \
-    || { printf 'Falta ryzenadj.\n' >&2; exit 1; }
+    || { printf 'ryzenadj is missing.\n' >&2; exit 1; }
 
 install -o root -g root -m 0755 \
     "${PROJECT_DIR}/workstation-power-profile-helper" \
@@ -66,7 +66,7 @@ if [[ ! -r /var/lib/workstation-power-profile/stock.env ]]; then
     /usr/local/sbin/workstation-power-profile-helper capture-defaults
 fi
 
-sudoers_line="${TARGET_USER} ALL=(root) NOPASSWD: /usr/local/sbin/workstation-power-profile-helper eco, /usr/local/sbin/workstation-power-profile-helper balanced, /usr/local/sbin/workstation-power-profile-helper max"
+sudoers_line="${TARGET_USER} ALL=(root) NOPASSWD: /usr/local/sbin/workstation-power-profile-helper quiet, /usr/local/sbin/workstation-power-profile-helper eco, /usr/local/sbin/workstation-power-profile-helper balanced, /usr/local/sbin/workstation-power-profile-helper cpu-focus, /usr/local/sbin/workstation-power-profile-helper ai, /usr/local/sbin/workstation-power-profile-helper custom *, /usr/local/sbin/workstation-power-profile-helper max"
 SUDOERS_TEMP="$(mktemp)"
 printf '%s\n' "${sudoers_line}" >"${SUDOERS_TEMP}"
 visudo -cf "${SUDOERS_TEMP}" >/dev/null
@@ -75,5 +75,5 @@ systemctl daemon-reload
 systemctl enable workstation-power-metrics.service
 systemctl restart workstation-power-metrics.service
 
-printf '\nInstalado. La GUI iniciara con tu sesion KDE y aparece como "Perfiles de energia".\n'
-printf 'Eco al arrancar (opcional): sudo systemctl enable --now workstation-power-profile.service\n'
+printf '\nInstalled. The GUI starts with KDE and appears as "Workstation Power Profiles".\n'
+printf 'Optional Eco profile at boot: sudo systemctl enable --now workstation-power-profile.service\n'

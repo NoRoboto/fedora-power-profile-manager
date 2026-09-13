@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Small KDE-friendly power profile manager for NVIDIA + RyzenAdj."""
+"""Small KDE-friendly power profile manager for NVIDIA and RyzenAdj."""
 
 from __future__ import annotations
 
@@ -8,13 +8,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -24,11 +29,19 @@ ENERGY_SUMMARY = Path("/run/workstation-power-profile/energy-summary")
 ENERGY_LOG_DIR = Path("/var/lib/workstation-power-profile/energy")
 NVIDIA_QUERY = [
     "nvidia-smi",
-    "--query-gpu=power.draw,power.limit",
+    "--query-gpu=power.draw,power.limit,power.min_limit,power.max_limit",
     "--format=csv,noheader,nounits",
     "-i",
     "0",
 ]
+PROFILES = (
+    ("Quiet Coding | CPU 30 W, GPU minimum", "quiet"),
+    ("Eco Dev | CPU 35 W, GPU minimum", "eco"),
+    ("Balanced | CPU 45 W, GPU minimum", "balanced"),
+    ("CPU Focus | CPU 50 W, GPU minimum", "cpu-focus"),
+    ("Local AI | CPU 45 W, GPU 180 W", "ai"),
+    ("Max Performance | saved CPU stock, GPU maximum", "max"),
+)
 
 
 def run(command: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -44,36 +57,62 @@ def run(command: list[str], timeout: int = 10) -> subprocess.CompletedProcess[st
 class PowerWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Perfiles de energia")
-        self.setMinimumWidth(430)
+        self.setWindowTitle("Workstation Power Profiles")
+        self.setMinimumWidth(500)
+        self.settings = QSettings("NoRoboto", "WorkstationPowerProfiles")
 
-        self.power_label = QLabel("GPU: consultando...")
+        self.power_label = QLabel("GPU: querying...")
         self.power_label.setStyleSheet("font-size: 18px; font-weight: 600; padding: 12px;")
-        self.status_label = QLabel("Selecciona un perfil.")
-        self.status_label.setWordWrap(True)
-        self.energy_label = QLabel("Energía CPU+GPU: esperando el primer minuto...")
+        self.energy_label = QLabel("CPU + GPU energy: waiting for the first minute...")
         self.energy_label.setStyleSheet("font-size: 15px; padding: 8px 12px;")
-        self.energy_label.setWordWrap(True)
+        self.status_label = QLabel("Choose a profile.")
+        self.status_label.setWordWrap(True)
+
+        self.profile_combo = QComboBox()
+        for label, key in PROFILES:
+            self.profile_combo.addItem(label, key)
+        apply_preset = QPushButton("Apply preset")
+        apply_preset.setMinimumHeight(42)
+        apply_preset.clicked.connect(self.apply_selected_profile)
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self.profile_combo, 1)
+        preset_row.addWidget(apply_preset)
+
+        self.cpu_input = QSpinBox()
+        self.cpu_input.setRange(10, 75)
+        self.cpu_input.setSuffix(" W")
+        self.cpu_input.setValue(int(self.settings.value("custom_cpu_watts", 50)))
+        self.gpu_input = QSpinBox()
+        self.gpu_input.setRange(1, 1000)
+        self.gpu_input.setSuffix(" W")
+        self.gpu_input.setValue(int(self.settings.value("custom_gpu_watts", 150)))
+        self.cpu_input.valueChanged.connect(
+            lambda value: self.settings.setValue("custom_cpu_watts", value)
+        )
+        self.gpu_input.valueChanged.connect(
+            lambda value: self.settings.setValue("custom_gpu_watts", value)
+        )
+
+        custom_form = QFormLayout()
+        custom_form.addRow("CPU limit:", self.cpu_input)
+        custom_form.addRow("GPU limit:", self.gpu_input)
+        apply_custom = QPushButton("Apply custom limits")
+        apply_custom.setMinimumHeight(42)
+        apply_custom.clicked.connect(self.apply_custom_profile)
+        custom_form.addRow(apply_custom)
+        custom_group = QGroupBox("Custom profile")
+        custom_group.setLayout(custom_form)
 
         layout = QVBoxLayout()
         layout.addWidget(self.power_label)
         layout.addWidget(self.energy_label)
-
-        profiles = (
-            ("Eco Dev Mode — GPU objetivo 90 W / CPU 35 W", "eco"),
-            ("Balanced AI — GPU objetivo 120 W / CPU 45 W", "balanced"),
-            ("Max Performance — GPU max / CPU stock", "max"),
-        )
-        for label, profile in profiles:
-            button = QPushButton(label)
-            button.setMinimumHeight(48)
-            button.clicked.connect(lambda _checked=False, p=profile: self.apply_profile(p))
-            layout.addWidget(button)
-
+        layout.addLayout(preset_row)
+        layout.addWidget(custom_group)
         layout.addWidget(self.status_label)
         note = QLabel(
-            "Energía medida: CPU package + GPU. No incluye placa, RAM, discos ni pérdidas de la fuente. "
-            f"CSV mensual: {ENERGY_LOG_DIR}"
+            "The GPU range comes from its VBIOS. Energy totals cover CPU package and GPU only. "
+            f"Monthly CSV files: {ENERGY_LOG_DIR}"
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -82,88 +121,112 @@ class PowerWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.refresh_gpu)
+        self.timer.timeout.connect(self.refresh_status)
         self.timer.start(2000)
-        self.refresh_gpu(show_dialog=True)
+        self.refresh_status(show_dialog=True)
 
-    def refresh_gpu(self, show_dialog: bool = False) -> None:
+    def refresh_status(self, show_dialog: bool = False) -> None:
         self.refresh_energy()
         if shutil.which("nvidia-smi") is None:
-            message = "No se encontro nvidia-smi. Instala y carga el controlador NVIDIA propietario."
-            self.power_label.setText("GPU: no disponible")
+            self.power_label.setText("GPU: unavailable")
             if show_dialog:
-                QMessageBox.critical(self, "NVIDIA no disponible", message)
+                QMessageBox.critical(
+                    self,
+                    "NVIDIA unavailable",
+                    "nvidia-smi was not found. Install and load the proprietary NVIDIA driver.",
+                )
             return
 
         try:
             result = run(NVIDIA_QUERY, timeout=5)
         except subprocess.TimeoutExpired:
-            self.power_label.setText("GPU: consulta agotada")
+            self.power_label.setText("GPU: query timed out")
             return
 
         if result.returncode != 0:
-            self.power_label.setText("GPU: modulo/controlador no disponible")
+            self.power_label.setText("GPU: driver unavailable")
             if show_dialog:
                 detail = result.stderr.strip() or result.stdout.strip()
                 QMessageBox.critical(
                     self,
-                    "NVIDIA no disponible",
-                    "nvidia-smi no pudo comunicarse con el controlador NVIDIA.\n\n" + detail,
+                    "NVIDIA unavailable",
+                    "nvidia-smi could not communicate with the NVIDIA driver.\n\n" + detail,
                 )
             return
 
-        first_gpu = result.stdout.strip().splitlines()[0]
-        fields = [value.strip() for value in first_gpu.split(",")]
-        if len(fields) == 2:
-            self.power_label.setText(f"GPU actual: {fields[0]} W   |   limite: {fields[1]} W")
-        else:
-            self.power_label.setText(f"GPU: {first_gpu}")
+        fields = [value.strip() for value in result.stdout.strip().splitlines()[0].split(",")]
+        if len(fields) != 4:
+            self.power_label.setText(f"GPU: {result.stdout.strip()}")
+            return
+        try:
+            draw, limit, minimum, maximum = (float(value) for value in fields)
+        except ValueError:
+            self.power_label.setText("GPU: invalid nvidia-smi response")
+            return
+
+        self.power_label.setText(
+            f"GPU now: {draw:.0f} W | limit: {limit:.0f} W | range: {minimum:.0f}-{maximum:.0f} W"
+        )
+        saved_gpu = self.gpu_input.value()
+        self.gpu_input.setRange(round(minimum), round(maximum))
+        self.gpu_input.setValue(max(round(minimum), min(saved_gpu, round(maximum))))
 
     def refresh_energy(self) -> None:
         try:
             summary = ENERGY_SUMMARY.read_text(encoding="utf-8").strip()
         except OSError:
-            self.energy_label.setText("Energía CPU+GPU: esperando el primer minuto...")
+            self.energy_label.setText("CPU + GPU energy: waiting for the first minute...")
             return
-        self.energy_label.setText(f"Energía CPU+GPU — {summary}")
+        self.energy_label.setText(f"CPU + GPU energy | {summary}")
 
-    def apply_profile(self, profile: str) -> None:
+    def prerequisites_available(self) -> bool:
         if not shutil.which("ryzenadj"):
             QMessageBox.critical(
                 self,
-                "RyzenAdj no disponible",
-                "No se encontro ryzenadj en PATH. Instalalo antes de aplicar perfiles.",
+                "RyzenAdj unavailable",
+                "ryzenadj was not found in PATH. Install it before applying profiles.",
             )
-            return
+            return False
         if not shutil.which("nvidia-smi"):
-            self.refresh_gpu(show_dialog=True)
-            return
+            self.refresh_status(show_dialog=True)
+            return False
         if not shutil.which("sudo") or not Path(HELPER).is_file():
             QMessageBox.critical(
                 self,
-                "Instalacion incompleta",
-                f"Falta {HELPER}. Ejecuta ./install.sh desde la carpeta del proyecto.",
+                "Incomplete installation",
+                f"{HELPER} is missing. Run ./install.sh from the project directory.",
             )
-            return
+            return False
+        return True
 
-        self.status_label.setText("Aplicando perfil...")
+    def apply_selected_profile(self) -> None:
+        profile = str(self.profile_combo.currentData())
+        self.apply_helper([profile])
+
+    def apply_custom_profile(self) -> None:
+        self.apply_helper(["custom", str(self.gpu_input.value()), str(self.cpu_input.value())])
+
+    def apply_helper(self, arguments: list[str]) -> None:
+        if not self.prerequisites_available():
+            return
+        self.status_label.setText("Applying profile...")
         QApplication.processEvents()
         try:
-            result = run(["sudo", "-n", HELPER, profile], timeout=15)
+            result = run(["sudo", "-n", HELPER, *arguments], timeout=15)
         except subprocess.TimeoutExpired:
-            QMessageBox.critical(self, "Tiempo agotado", "El helper no termino en 15 segundos.")
+            QMessageBox.critical(self, "Timed out", "The helper did not finish within 15 seconds.")
             return
 
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
-            if "password" in detail.lower() or "contrasena" in detail.lower():
-                detail += "\n\nReinstala con ./install.sh para crear la regla NOPASSWD limitada al helper."
-            QMessageBox.critical(self, "No se pudo aplicar", detail)
-            self.status_label.setText("Error al aplicar el perfil.")
+            if "password" in detail.lower():
+                detail += "\n\nRun ./install.sh again to refresh the restricted NOPASSWD rule."
+            QMessageBox.critical(self, "Profile failed", detail)
+            self.status_label.setText("Could not apply the profile.")
             return
 
-        self.status_label.setText(result.stdout.strip() or f"Perfil {profile} aplicado.")
-        self.refresh_gpu()
+        self.status_label.setText(result.stdout.strip() or "Profile applied.")
+        self.refresh_status()
 
 
 def main() -> int:

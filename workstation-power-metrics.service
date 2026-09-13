@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish AMD CPU and NVIDIA GPU power for Plasma panel
+Description=Track AMD CPU and NVIDIA GPU power for Plasma
 After=systemd-modules-load.service nvidia-persistenced.service
 
 [Service]

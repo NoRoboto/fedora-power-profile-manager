@@ -5,7 +5,7 @@ if [[ -r /run/workstation-power-profile/metrics ]]; then
     metrics="$(/usr/bin/cat /run/workstation-power-profile/metrics)"
     if [[ -r /run/workstation-power-profile/energy-summary ]]; then
         summary="$(/usr/bin/cat /run/workstation-power-profile/energy-summary)"
-        month="${summary##*Mes }"
+        month="${summary##*Month }"
         printf '%s  M %s\n' "${metrics}" "${month}"
     else
         printf '%s\n' "${metrics}"
