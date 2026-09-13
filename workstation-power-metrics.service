@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish AMD CPU and NVIDIA GPU power for Plasma panel
+After=systemd-modules-load.service nvidia-persistenced.service
+
+[Service]
+Type=simple
+RuntimeDirectory=workstation-power-profile
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/sbin/workstation-power-metrics
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

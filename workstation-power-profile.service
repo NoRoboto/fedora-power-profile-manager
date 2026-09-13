@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply Eco Dev workstation power profile
+After=systemd-modules-load.service multi-user.target nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/workstation-power-profile-helper eco
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+#!/usr/bin/bash
+set -u
+
+if [[ -r /run/workstation-power-profile/metrics ]]; then
+    metrics="$(/usr/bin/cat /run/workstation-power-profile/metrics)"
+    if [[ -r /run/workstation-power-profile/energy-summary ]]; then
+        summary="$(/usr/bin/cat /run/workstation-power-profile/energy-summary)"
+        month="${summary##*Mes }"
+        printf '%s  M %s\n' "${metrics}" "${month}"
+    else
+        printf '%s\n' "${metrics}"
+    fi
+elif output="$(/usr/bin/nvidia-smi -i 0 --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null)"; then
+    /usr/bin/awk 'NR == 1 { printf "GPU %.0f W\n", $1 }' <<<"${output}"
+else
+    printf 'CPU ? W  GPU ? W\n'
+fi

@@ -1,0 +1,129 @@
+#!/usr/bin/bash
+set -Eeuo pipefail
+
+export LC_ALL=C
+
+readonly RUNTIME_DIR=/run/workstation-power-profile
+readonly OUTPUT="${RUNTIME_DIR}/metrics"
+readonly SUMMARY="${RUNTIME_DIR}/energy-summary"
+readonly STATE_DIR=/var/lib/workstation-power-profile
+readonly ENERGY_DIR="${STATE_DIR}/energy"
+readonly INTERVAL_SECONDS=2
+
+bucket_start=""
+first_sample_epoch=0
+last_sample_epoch=0
+cpu_sum=0
+gpu_sum=0
+cpu_samples=0
+gpu_samples=0
+
+install -d -m 0755 "${STATE_DIR}" "${ENERGY_DIR}"
+
+atomic_write() {
+    local target="$1" contents="$2" temporary
+    temporary="$(/usr/bin/mktemp "${RUNTIME_DIR}/.output.XXXXXX")"
+    printf '%s\n' "${contents}" >"${temporary}"
+    chmod 0644 "${temporary}"
+    mv -f "${temporary}" "${target}"
+}
+
+update_summary() {
+    local today month month_file totals
+    today="$(date +%F)"
+    month="$(date +%Y-%m)"
+    month_file="${ENERGY_DIR}/${month}.csv"
+    totals="$(awk -F, -v today="${today}" '
+        NR > 1 {
+            month_wh += $8
+            if (substr($2, 1, 10) == today) today_wh += $8
+        }
+        END { printf "%.3f %.3f", today_wh / 1000, month_wh / 1000 }
+    ' "${month_file}" 2>/dev/null || printf '0.000 0.000')"
+    read -r today_kwh month_kwh <<<"${totals}"
+    atomic_write "${SUMMARY}" "Hoy ${today_kwh} kWh  Mes ${month_kwh} kWh"
+}
+
+reset_bucket() {
+    bucket_start="$1"
+    first_sample_epoch=0
+    last_sample_epoch=0
+    cpu_sum=0
+    gpu_sum=0
+    cpu_samples=0
+    gpu_samples=0
+}
+
+flush_bucket() {
+    local duration iso month_file cpu_avg gpu_avg cpu_wh gpu_wh total_wh
+    (( cpu_samples > 0 )) || return 0
+
+    duration=$((last_sample_epoch - first_sample_epoch + INTERVAL_SECONDS))
+    (( duration > 60 )) && duration=60
+    (( duration < 1 )) && duration=1
+    iso="$(date --date="@${bucket_start}" '+%Y-%m-%dT%H:%M:%S%z')"
+    month_file="${ENERGY_DIR}/${iso:0:7}.csv"
+    cpu_avg="$(awk -v sum="${cpu_sum}" -v count="${cpu_samples}" 'BEGIN { printf "%.3f", sum / count }')"
+    if (( gpu_samples > 0 )); then
+        gpu_avg="$(awk -v sum="${gpu_sum}" -v count="${gpu_samples}" 'BEGIN { printf "%.3f", sum / count }')"
+    else
+        gpu_avg=0.000
+    fi
+    cpu_wh="$(awk -v watts="${cpu_avg}" -v seconds="${duration}" 'BEGIN { printf "%.6f", watts * seconds / 3600 }')"
+    gpu_wh="$(awk -v watts="${gpu_avg}" -v seconds="${duration}" 'BEGIN { printf "%.6f", watts * seconds / 3600 }')"
+    total_wh="$(awk -v cpu="${cpu_wh}" -v gpu="${gpu_wh}" 'BEGIN { printf "%.6f", cpu + gpu }')"
+
+    if [[ ! -e ${month_file} ]]; then
+        printf 'minute_epoch,local_minute,duration_s,cpu_avg_w,gpu_avg_w,cpu_wh,gpu_wh,total_wh,cpu_samples,gpu_samples\n' \
+            >"${month_file}"
+        chmod 0644 "${month_file}"
+    fi
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "${bucket_start}" "${iso}" "${duration}" "${cpu_avg}" "${gpu_avg}" \
+        "${cpu_wh}" "${gpu_wh}" "${total_wh}" "${cpu_samples}" "${gpu_samples}" \
+        >>"${month_file}"
+    update_summary
+}
+
+record_sample() {
+    local cpu_watts="$1" gpu_watts="$2" now current_bucket
+    now="$(date +%s)"
+    current_bucket=$((now / 60 * 60))
+    if [[ -z ${bucket_start} ]]; then
+        reset_bucket "${current_bucket}"
+    elif (( current_bucket != bucket_start )); then
+        flush_bucket
+        reset_bucket "${current_bucket}"
+    fi
+
+    (( first_sample_epoch == 0 )) && first_sample_epoch="${now}"
+    last_sample_epoch="${now}"
+    cpu_sum="$(awk -v sum="${cpu_sum}" -v value="${cpu_watts}" 'BEGIN { printf "%.6f", sum + value }')"
+    ((cpu_samples += 1))
+    if [[ ${gpu_watts} =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        gpu_sum="$(awk -v sum="${gpu_sum}" -v value="${gpu_watts}" 'BEGIN { printf "%.6f", sum + value }')"
+        ((gpu_samples += 1))
+    fi
+}
+
+publish() {
+    local cpu_watts="$1" gpu_watts="?" gpu_display="?"
+    if gpu_output="$(/usr/bin/nvidia-smi -i 0 --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null)"; then
+        gpu_watts="$(/usr/bin/awk 'NR == 1 { printf "%.3f", $1 }' <<<"${gpu_output}")"
+        gpu_display="$(/usr/bin/awk -v watts="${gpu_watts}" 'BEGIN { printf "%.0f", watts }')"
+    fi
+    atomic_write "${OUTPUT}" "$(printf 'CPU %.0f W  GPU %s W' "${cpu_watts}" "${gpu_display}")"
+    record_sample "${cpu_watts}" "${gpu_watts}"
+}
+
+# turbostat reads AMD RAPL hardware counters. One persistent process avoids
+# spawning a privileged monitor for every panel refresh.
+update_summary
+trap 'flush_bucket' EXIT
+trap 'exit 0' TERM INT
+while IFS= read -r line; do
+    [[ ${line} == "PkgWatt" ]] && continue
+    [[ ${line} =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+    publish "${line}"
+done < <(/usr/bin/stdbuf -oL /usr/bin/turbostat \
+    --quiet --Summary --show PkgWatt --interval "${INTERVAL_SECONDS}" 2>/dev/null)

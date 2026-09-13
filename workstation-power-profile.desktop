@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Perfiles de energia
+Comment=Controla limites de potencia NVIDIA y Ryzen
+Exec=/usr/local/bin/workstation-power-profile-gui
+Icon=preferences-system-power-management
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true

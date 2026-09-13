@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly STATE_DIR="/var/lib/workstation-power-profile"
+readonly STOCK_FILE="${STATE_DIR}/stock.env"
+
+fail() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ ${EUID} -eq 0 ]] || fail "este helper debe ejecutarse como root mediante sudo o systemd."
+
+NVIDIA_SMI="$(command -v nvidia-smi || true)"
+if [[ -x /usr/local/bin/ryzenadj ]]; then
+    RYZENADJ=/usr/local/bin/ryzenadj
+else
+    RYZENADJ="$(command -v ryzenadj || true)"
+fi
+[[ -n ${NVIDIA_SMI} ]] || fail "nvidia-smi no esta instalado."
+[[ -n ${RYZENADJ} ]] || fail "ryzenadj no esta instalado o no esta en PATH."
+"${NVIDIA_SMI}" -L >/dev/null 2>&1 || fail "el modulo/controlador NVIDIA no esta cargado o no responde."
+
+capture_stock() {
+    local info stapm fast slow
+    if ! info="$(${RYZENADJ} -i 2>&1)"; then
+        if [[ ${info} == *"CPU Family: Dragon Range"* && ${info} == *"does not affect adjustments"* ]]; then
+            # RyzenAdj cannot read the Dragon Range PM table. AMD specifies 75 W
+            # as maximum cTDP for Ryzen 9 7945HX3D.
+            stapm=75000
+            fast=75000
+            slow=75000
+        else
+            fail "ryzenadj no pudo leer la CPU: ${info}"
+        fi
+    fi
+
+    read_limit() {
+        local parameter="$1"
+        awk -F '|' -v parameter="${parameter}" '
+            $3 ~ parameter {
+                value=$2
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+                if (value ~ /^[0-9]+([.][0-9]+)?$/) {
+                    printf "%.0f\n", value * 1000
+                    exit
+                }
+            }
+        ' <<<"${info}"
+    }
+
+    if [[ -z ${stapm:-} ]]; then
+        stapm="$(read_limit 'stapm-limit')"
+        fast="$(read_limit 'fast-limit')"
+        slow="$(read_limit 'slow-limit')"
+    fi
+    [[ ${stapm} =~ ^[0-9]+$ && ${fast} =~ ^[0-9]+$ && ${slow} =~ ^[0-9]+$ ]] \
+        || fail "no se pudieron detectar los limites stock desde 'ryzenadj -i'."
+
+    install -d -m 0700 "${STATE_DIR}"
+    umask 077
+    printf 'STOCK_STAPM=%s\nSTOCK_FAST=%s\nSTOCK_SLOW=%s\n' \
+        "${stapm}" "${fast}" "${slow}" >"${STOCK_FILE}"
+    printf 'Limites CPU stock guardados: STAPM=%s mW, fast=%s mW, slow=%s mW.\n' \
+        "${stapm}" "${fast}" "${slow}"
+}
+
+apply_limits() {
+    local gpu_watts="$1" cpu_milliwatts="$2"
+    local output limits gpu_min gpu_max effective_gpu
+
+    limits="$(${NVIDIA_SMI} -i 0 \
+        --query-gpu=power.min_limit,power.max_limit \
+        --format=csv,noheader,nounits 2>/dev/null | head -n1)"
+    IFS=',' read -r gpu_min gpu_max <<<"${limits}"
+    gpu_min="${gpu_min//[[:space:]]/}"
+    gpu_max="${gpu_max//[[:space:]]/}"
+    [[ ${gpu_min} =~ ^[0-9]+([.][0-9]+)?$ && ${gpu_max} =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        || fail "la GPU no publica un rango de Power Limit modificable."
+    effective_gpu="$(awk -v requested="${gpu_watts}" -v minimum="${gpu_min}" -v maximum="${gpu_max}" \
+        'BEGIN {
+            if (requested < minimum) requested=minimum
+            if (requested > maximum) requested=maximum
+            printf "%.2f", requested
+        }')"
+
+    output="$(${RYZENADJ} \
+        --stapm-limit="${cpu_milliwatts}" \
+        --fast-limit="${cpu_milliwatts}" \
+        --slow-limit="${cpu_milliwatts}" 2>&1)" \
+        || fail "ryzenadj fallo; GPU aun no fue modificada: ${output}"
+
+    output="$(${NVIDIA_SMI} -i 0 -pl "${effective_gpu}" 2>&1)" \
+        || fail "CPU aplicada, pero nvidia-smi rechazo ${effective_gpu} W: ${output}"
+    EFFECTIVE_GPU="${effective_gpu}"
+}
+
+case "${1:-}" in
+    capture-defaults)
+        [[ ! -e ${STOCK_FILE} || ${2:-} == "--force" ]] \
+            || fail "ya existe ${STOCK_FILE}; usa --force solo despues de restaurar firmware/reiniciar."
+        capture_stock
+        ;;
+    eco)
+        apply_limits 90 35000
+        printf 'Eco Dev Mode aplicado: GPU %s W (minimo VBIOS si supera 90 W), CPU 35 W.\n' "${EFFECTIVE_GPU}"
+        ;;
+    balanced)
+        apply_limits 120 45000
+        printf 'Balanced AI aplicado: GPU %s W (minimo VBIOS si supera 120 W), CPU 45 W.\n' "${EFFECTIVE_GPU}"
+        ;;
+    max)
+        [[ -r ${STOCK_FILE} ]] || fail "faltan limites CPU stock; ejecuta capture-defaults tras reiniciar."
+        # File is root-owned, mode 0600, and contains only assignments generated above.
+        source "${STOCK_FILE}"
+        [[ ${STOCK_STAPM:-} =~ ^[0-9]+$ && ${STOCK_FAST:-} =~ ^[0-9]+$ && ${STOCK_SLOW:-} =~ ^[0-9]+$ ]] \
+            || fail "${STOCK_FILE} contiene valores invalidos."
+        gpu_max="$(${NVIDIA_SMI} -i 0 --query-gpu=power.max_limit --format=csv,noheader,nounits 2>/dev/null | head -n1)"
+        gpu_max="${gpu_max//[[:space:]]/}"
+        [[ ${gpu_max} =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "no se pudo consultar power.max_limit de la GPU."
+        output="$(${RYZENADJ} --max-performance \
+            --stapm-limit="${STOCK_STAPM}" \
+            --fast-limit="${STOCK_FAST}" \
+            --slow-limit="${STOCK_SLOW}" 2>&1)" \
+            || fail "ryzenadj no pudo restaurar limites stock: ${output}"
+        output="$(${NVIDIA_SMI} -i 0 -pl "${gpu_max}" 2>&1)" \
+            || fail "CPU restaurada, pero nvidia-smi rechazo el maximo ${gpu_max} W: ${output}"
+        printf 'Max Performance aplicado: GPU %s W; CPU restaurada a valores capturados.\n' "${gpu_max}"
+        ;;
+    *)
+        fail "perfil invalido. Usa: eco, balanced, max o capture-defaults."
+        ;;
+esac
