@@ -39,6 +39,7 @@ PROFILES = (
     ("Eco Dev | CPU 35 W, GPU minimum", "eco"),
     ("Balanced | CPU 45 W, GPU minimum", "balanced"),
     ("CPU Focus | CPU 50 W, GPU minimum", "cpu-focus"),
+    ("Max CPU / Min GPU | CPU 75 W, GPU minimum", "cpu-max"),
     ("Local AI | CPU 45 W, GPU 180 W", "ai"),
     ("Max Performance | saved CPU stock, GPU maximum", "max"),
 )

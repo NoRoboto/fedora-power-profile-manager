@@ -117,6 +117,10 @@ case "${1:-}" in
         apply_limits 90 50000
         printf 'CPU Focus applied: GPU %s W, CPU 50 W.\n' "${EFFECTIVE_GPU}"
         ;;
+    cpu-max)
+        apply_limits 90 75000
+        printf 'Max CPU / Min GPU applied: GPU %s W, CPU 75 W.\n' "${EFFECTIVE_GPU}"
+        ;;
     ai)
         apply_limits 180 45000
         printf 'Local AI applied: GPU %s W, CPU 45 W.\n' "${EFFECTIVE_GPU}"
@@ -148,6 +152,6 @@ case "${1:-}" in
         printf 'Max Performance applied: GPU %s W; CPU restored to saved stock limits.\n' "${gpu_max}"
         ;;
     *)
-        fail "invalid profile. Use quiet, eco, balanced, cpu-focus, ai, custom, max, or capture-defaults."
+        fail "invalid profile. Use quiet, eco, balanced, cpu-focus, cpu-max, ai, custom, max, or capture-defaults."
         ;;
 esac

@@ -66,7 +66,7 @@ if [[ ! -r /var/lib/workstation-power-profile/stock.env ]]; then
     /usr/local/sbin/workstation-power-profile-helper capture-defaults
 fi
 
-sudoers_line="${TARGET_USER} ALL=(root) NOPASSWD: /usr/local/sbin/workstation-power-profile-helper quiet, /usr/local/sbin/workstation-power-profile-helper eco, /usr/local/sbin/workstation-power-profile-helper balanced, /usr/local/sbin/workstation-power-profile-helper cpu-focus, /usr/local/sbin/workstation-power-profile-helper ai, /usr/local/sbin/workstation-power-profile-helper custom *, /usr/local/sbin/workstation-power-profile-helper max"
+sudoers_line="${TARGET_USER} ALL=(root) NOPASSWD: /usr/local/sbin/workstation-power-profile-helper quiet, /usr/local/sbin/workstation-power-profile-helper eco, /usr/local/sbin/workstation-power-profile-helper balanced, /usr/local/sbin/workstation-power-profile-helper cpu-focus, /usr/local/sbin/workstation-power-profile-helper cpu-max, /usr/local/sbin/workstation-power-profile-helper ai, /usr/local/sbin/workstation-power-profile-helper custom *, /usr/local/sbin/workstation-power-profile-helper max"
 SUDOERS_TEMP="$(mktemp)"
 printf '%s\n' "${sudoers_line}" >"${SUDOERS_TEMP}"
 visudo -cf "${SUDOERS_TEMP}" >/dev/null
