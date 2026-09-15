@@ -17,6 +17,7 @@ cpu_sum=0
 gpu_sum=0
 cpu_samples=0
 gpu_samples=0
+zero_cpu_samples=0
 
 install -d -m 0755 "${STATE_DIR}" "${ENERGY_DIR}"
 
@@ -138,5 +139,14 @@ trap 'exit 0' TERM INT
 while IFS= read -r line; do
     [[ ${line} == "PkgWatt" ]] && continue
     [[ ${line} =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+    if ! /usr/bin/awk -v watts="${line}" 'BEGIN { exit !(watts > 0.1) }'; then
+        ((zero_cpu_samples += 1))
+        if (( zero_cpu_samples >= 3 )); then
+            printf 'CPU power reader returned zero three times; restarting after resume.\n' >&2
+            exit 1
+        fi
+        continue
+    fi
+    zero_cpu_samples=0
     publish "${line}"
 done <&"${POWER_READER[0]}"
